@@ -1,0 +1,8 @@
+[package]
+name = "obsidian"
+version = "0.1.0"
+
+[bundle]
+identifier = "com.yourcompany.obsidian"
+icon = "icons/icon.icns"
+
