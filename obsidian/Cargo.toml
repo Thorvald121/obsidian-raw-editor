@@ -4,7 +4,7 @@ version     = "0.1.0"
 edition     = "2021"
 authors     = ["Frostfall Studio"]                    # ← make this a one-element array
 license     = "MIT"
-repository  = "https://github.com/yourname/obsidian"
+repository  = "https://github.com/Thorvald121/obsidian"
 description = "A Lightroom-style photo editor built in Rust + egui"
 readme      = "README.md"
 
@@ -18,7 +18,7 @@ rawloader = "0.37.1"
 [package.metadata.bundle]
 # tell cargo-bundle where to find your icon(s)
 # this *must* be an array, even if you only have one file
-icon = ["icons/icon.icns"]
+icon = ["/Users/vyakushev/Projects/obsidian-raw-editor/obsidian/icons/icon.icns"]
 
 # macOS-specific settings
 [package.metadata.bundle.mac]
