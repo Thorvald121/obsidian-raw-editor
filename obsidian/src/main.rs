@@ -1,4 +1,3 @@
-```rust
 // src/main.rs
 // Dependencies in Cargo.toml:
 // eframe = "0.23"
@@ -177,19 +176,18 @@ impl App for ObsApp {
             ui.horizontal(|ui| {
                 if ui.button("Open…").clicked() {
                     if let Some(path) = FileDialog::new()
-                        .add_filter("Image or RAW", &["png","jpg","jpeg","tif","tiff"])
-                        .pick_file()
+                        .add_filter("Image or RAW", &["png","jpg","jpeg","tif","tiff"]).pick_file()
                         {
                             // load JPEG/PNG or RAW
                             let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                 match ext.to_lowercase().as_str() {
                                     "tif" | "tiff" => {
                                         // RAW via rawloader
-                                        let raw = decode_file(&path).ok();
-                                        // handle raw as needed...
-                                        DynamicImage::ImageLuma8(image::GrayImage::new(1,1))
+                                        let _raw = decode_file(&path).ok();
+                                        // placeholder blank
+                                        DynamicImage::new_luma8(1,1)
                                     }
-                                    _ => image::open(&path).ok().unwrap(),
+                                    _ => image::open(&path).unwrap(),
                                 }
                             } else { image::open(&path).unwrap() };
                             self.current_image = Some(dyn_img.clone());
@@ -258,4 +256,3 @@ fn main() {
         Box::new(|_| Box::new(ObsApp::default())),
     ).unwrap();
 }
-```
