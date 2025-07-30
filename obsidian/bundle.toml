@@ -4,5 +4,5 @@ version = "0.1.0"
 
 [bundle]
 identifier = "com.yourcompany.obsidian"
-icon = "icons/icon.icns"
+icon = ["/Users/vyakushev/Projects/obsidian-raw-editor/obsidian/icons/icon.icns"]
 
