@@ -1,0 +1,11 @@
+/Users/vyakushev/Projects/obsidian-raw-editor/obsidian/target/debug/deps/ecolor-0222e41f55b21bcf.d: /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/lib.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/color32.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva_gamma.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/rgba.rs
+
+/Users/vyakushev/Projects/obsidian-raw-editor/obsidian/target/debug/deps/libecolor-0222e41f55b21bcf.rlib: /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/lib.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/color32.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva_gamma.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/rgba.rs
+
+/Users/vyakushev/Projects/obsidian-raw-editor/obsidian/target/debug/deps/libecolor-0222e41f55b21bcf.rmeta: /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/lib.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/color32.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva_gamma.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva.rs /Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/rgba.rs
+
+/Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/lib.rs:
+/Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/color32.rs:
+/Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva_gamma.rs:
+/Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/hsva.rs:
+/Users/vyakushev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecolor-0.23.0/src/rgba.rs:

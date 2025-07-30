@@ -7,11 +7,10 @@
 // rawloader = "0.37.1"
 
 use eframe::{egui, run_native, App, Frame, IconData, NativeOptions};
-use egui::{ColorImage, TextureOptions, Color32, ComboBox};
+use egui::{ColorImage, TextureOptions, Color32, ComboBox, Image};
 use image::{DynamicImage, imageops};
-use rawloader::{decode_file, RawImageData};
+use rawloader::decode_file;
 use rfd::FileDialog;
-use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
@@ -33,47 +32,38 @@ const THEME_NAMES: &[&str] = &[
 ];
 
 struct ObsApp {
-    // Image data
     current_image: Option<DynamicImage>,
     texture: Option<egui::TextureHandle>,
     history: Vec<DynamicImage>,
     future: Vec<DynamicImage>,
     zoom: f32,
-    // Adjustment parameters
     exposure: f32,
     contrast: f32,
     saturation: f32,
     vibrance: f32,
-    // Theme index
     theme: usize,
-    // Worker channel
     job_sender: Sender<WorkerJob>,
     result_receiver: Receiver<ColorImage>,
 }
 
 impl Default for ObsApp {
     fn default() -> Self {
-        // create channels
         let (tx_job, rx_job) = channel::<WorkerJob>();
         let (tx_res, rx_res) = channel::<ColorImage>();
-        // spawn worker
         thread::spawn(move || {
             while let Ok(job) = rx_job.recv() {
                 let mut img = job.image;
-                // Exposure
                 if job.exposure.abs() > f32::EPSILON {
                     let v = (job.exposure * 100.0) as i32;
                     img = DynamicImage::ImageRgba8(
                         imageops::brighten(&img.to_rgba8(), v)
                     );
                 }
-                // Contrast
                 if job.contrast.abs() > f32::EPSILON {
                     img = DynamicImage::ImageRgba8(
                         imageops::contrast(&img.to_rgba8(), job.contrast * 100.0)
                     );
                 }
-                // TODO: saturation & vibrance
                 let rgba = img.to_rgba8();
                 let size = [rgba.width() as usize, rgba.height() as usize];
                 let flat = rgba.into_flat_samples();
@@ -100,7 +90,6 @@ impl Default for ObsApp {
 }
 
 impl ObsApp {
-    // Enqueue a processing job
     fn queue_job(&self) {
         if let Some(img) = &self.current_image {
             let job = WorkerJob {
@@ -113,7 +102,6 @@ impl ObsApp {
             let _ = self.job_sender.send(job);
         }
     }
-    // History operations
     fn commit(&mut self) {
         if let Some(img) = &self.current_image {
             self.history.push(img.clone());
@@ -149,12 +137,11 @@ impl ObsApp {
 
 impl App for ObsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // receive processed image
         if let Ok(ci) = self.result_receiver.try_recv() {
             let tex = ctx.load_texture("main_image", ci, TextureOptions::default());
             self.texture = Some(tex);
         }
-        // apply theme
+        // Apply theme
         match self.theme {
             0 => ctx.set_visuals(egui::Visuals::dark()),
             1 => ctx.set_visuals(egui::Visuals::light()),
@@ -171,20 +158,19 @@ impl App for ObsApp {
             }
             _ => {}
         }
+
         // Top ribbon
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open…").clicked() {
                     if let Some(path) = FileDialog::new()
-                        .add_filter("Image or RAW", &["png","jpg","jpeg","tif","tiff"]).pick_file()
+                        .add_filter("Image or RAW", &["png","jpg","jpeg","tif","tiff"] )
+                        .pick_file()
                         {
-                            // load JPEG/PNG or RAW
                             let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                 match ext.to_lowercase().as_str() {
                                     "tif" | "tiff" => {
-                                        // RAW via rawloader
-                                        let _raw = decode_file(&path).ok();
-                                        // placeholder blank
+                                        let _ = decode_file(&path);
                                         DynamicImage::new_luma8(1,1)
                                     }
                                     _ => image::open(&path).unwrap(),
@@ -198,7 +184,8 @@ impl App for ObsApp {
                 if ui.button("Undo").clicked() { self.undo(); }
                 if ui.button("Redo").clicked() { self.redo(); }
                 if ui.button("Reset").clicked() { self.reset(); }
-                ComboBox::from_label("Theme").selected_text(THEME_NAMES[self.theme])
+                ComboBox::from_label("Theme")
+                .selected_text(THEME_NAMES[self.theme])
                 .show_ui(ui, |ui| {
                     for (i,name) in THEME_NAMES.iter().enumerate() {
                         ui.selectable_value(&mut self.theme, i, *name);
@@ -206,33 +193,27 @@ impl App for ObsApp {
                 });
             });
         });
-        // Side sliders
+
+        // Side panel adjustments
         egui::SidePanel::right("side_panel").resizable(false).show(ctx, |ui| {
             ui.heading("Adjustments");
             if self.texture.is_some() {
-                let exposure_changed = ui
-                .add(egui::Slider::new(&mut self.exposure, -5.0..=5.0).text("Exposure"))
-                .changed();
-                let contrast_changed = ui
-                .add(egui::Slider::new(&mut self.contrast, -100.0..=100.0).text("Contrast"))
-                .changed();
-                let sat_changed = ui
-                .add(egui::Slider::new(&mut self.saturation, -100.0..=100.0).text("Saturation"))
-                .changed();
-                let vib_changed = ui
-                .add(egui::Slider::new(&mut self.vibrance, -100.0..=100.0).text("Vibrance"))
-                .changed();
-                if exposure_changed || contrast_changed || sat_changed || vib_changed {
+                let exp_ch = ui.add(egui::Slider::new(&mut self.exposure, -5.0..=5.0).text("Exposure")).changed();
+                let ctr_ch = ui.add(egui::Slider::new(&mut self.contrast, -100.0..=100.0).text("Contrast")).changed();
+                let sat_ch = ui.add(egui::Slider::new(&mut self.saturation, -100.0..=100.0).text("Saturation")).changed();
+                let vib_ch = ui.add(egui::Slider::new(&mut self.vibrance, -100.0..=100.0).text("Vibrance")).changed();
+                if exp_ch || ctr_ch || sat_ch || vib_ch {
                     self.queue_job();
                 }
             }
         });
-        // Main image
+
+        // Main image view
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(tex) = &self.texture {
                 egui::ScrollArea::both().show(ui, |ui| {
                     let size = tex.size_vec2() * self.zoom;
-                    ui.image(tex.id(), size);
+                    ui.add(Image::new(tex.id()).desired_size(size));
                 });
             } else {
                 ui.centered_and_justified(|ui| { ui.label("Open an image to get started"); });
@@ -241,18 +222,18 @@ impl App for ObsApp {
     }
 }
 
-fn main() {
-    // load icon
-    let icon = load_icon("icons/icon.png"); // implement load_icon() to read file into IconData
+fn load_icon(path: &str) -> IconData {
+    let icon_buf = std::fs::read(path).expect("Failed to read icon");
+    IconData { rgba: icon_buf, width: 256, height: 256 }
+}
 
+fn main() {
+    let icon = load_icon("icons/icon.png");
     let native_options = NativeOptions {
         initial_window_size: Some(egui::Vec2::new(1024.0, 768.0)),
         icon_data: Some(icon),
         ..Default::default()
     };
-    run_native(
-        "Obsidian",
-        native_options,
-        Box::new(|_| Box::new(ObsApp::default())),
-    ).unwrap();
+    run_native("Obsidian", native_options, Box::new(|_| Box::new(ObsApp::default())))
+    .expect("run_native failed");
 }
