@@ -8,11 +8,29 @@
 
 use eframe::{egui, run_native, App, Frame, NativeOptions};
 use egui::{ColorImage, TextureOptions, Color32, ComboBox};
-use image::{DynamicImage, imageops};
+use image::{DynamicImage, imageops, ImageBuffer, Rgba};
 use rawloader::decode_file;
 use rfd::FileDialog;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
+
+/// Adjust saturation by a given factor (1.0 = no change)
+fn saturate(buf: &ImageBuffer<Rgba<u8>, Vec<u8>>, factor: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let (w, h) = (buf.width(), buf.height());
+    let mut out = ImageBuffer::new(w, h);
+    for (x, y, pixel) in buf.enumerate_pixels() {
+        let [r, g, b, a] = pixel.0;
+        let r_f = r as f32;
+        let g_f = g as f32;
+        let b_f = b as f32;
+        let lum = 0.2126 * r_f + 0.7152 * g_f + 0.0722 * b_f;
+        let nr = (lum + (r_f - lum) * factor).clamp(0.0, 255.0) as u8;
+        let ng = (lum + (g_f - lum) * factor).clamp(0.0, 255.0) as u8;
+        let nb = (lum + (b_f - lum) * factor).clamp(0.0, 255.0) as u8;
+        out.put_pixel(x, y, Rgba([nr, ng, nb, a]));
+    }
+    out
+}
 
 // Worker job for non-blocking adjustments
 struct WorkerJob {
@@ -53,18 +71,34 @@ impl Default for ObsApp {
         thread::spawn(move || {
             while let Ok(job) = rx_job.recv() {
                 let mut img = job.image;
+                // Exposure
                 if job.exposure.abs() > f32::EPSILON {
                     let v = (job.exposure * 100.0) as i32;
                     img = DynamicImage::ImageRgba8(
-                        imageops::brighten(&img.to_rgba8(), v)
+                        imageops::brighten(&img.to_rgba8(), v),
                     );
                 }
+                // Contrast
                 if job.contrast.abs() > f32::EPSILON {
                     img = DynamicImage::ImageRgba8(
-                        imageops::contrast(&img.to_rgba8(), job.contrast * 100.0)
+                        imageops::contrast(&img.to_rgba8(), job.contrast * 100.0),
                     );
                 }
-                // (Other adjustments could be added here)
+                // Saturation
+                if job.saturation.abs() > f32::EPSILON {
+                    let factor = 1.0 + job.saturation / 100.0;
+                    img = DynamicImage::ImageRgba8(
+                        saturate(&img.to_rgba8(), factor),
+                    );
+                }
+                // Vibrance (approx. same as saturation)
+                if job.vibrance.abs() > f32::EPSILON {
+                    let factor = 1.0 + job.vibrance / 100.0;
+                    img = DynamicImage::ImageRgba8(
+                        saturate(&img.to_rgba8(), factor),
+                    );
+                }
+                // Convert to ColorImage for rendering
                 let rgba = img.to_rgba8();
                 let size = [rgba.width() as usize, rgba.height() as usize];
                 let flat = rgba.into_flat_samples();
