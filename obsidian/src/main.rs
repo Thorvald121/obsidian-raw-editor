@@ -12,6 +12,7 @@ use image::{DynamicImage, imageops, ImageBuffer, Rgba};
 use rawloader::decode_file;
 use rfd::FileDialog;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Instant, Duration};
 use std::thread;
 
 /// Adjust saturation by a given factor (1.0 = no change)
@@ -20,13 +21,10 @@ fn saturate(buf: &ImageBuffer<Rgba<u8>, Vec<u8>>, factor: f32) -> ImageBuffer<Rg
     let mut out = ImageBuffer::new(w, h);
     for (x, y, pixel) in buf.enumerate_pixels() {
         let [r, g, b, a] = pixel.0;
-        let r_f = r as f32;
-        let g_f = g as f32;
-        let b_f = b as f32;
-        let lum = 0.2126 * r_f + 0.7152 * g_f + 0.0722 * b_f;
-        let nr = (lum + (r_f - lum) * factor).clamp(0.0, 255.0) as u8;
-        let ng = (lum + (g_f - lum) * factor).clamp(0.0, 255.0) as u8;
-        let nb = (lum + (b_f - lum) * factor).clamp(0.0, 255.0) as u8;
+        let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+        let nr = (lum + (r as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
+        let ng = (lum + (g as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
+        let nb = (lum + (b as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
         out.put_pixel(x, y, Rgba([nr, ng, nb, a]));
     }
     out
@@ -62,6 +60,8 @@ struct ObsApp {
     theme: usize,
     job_sender: Sender<WorkerJob>,
     result_receiver: Receiver<ColorImage>,
+    last_job: Instant,
+    debounce: Duration,
 }
 
 impl Default for ObsApp {
@@ -73,9 +73,8 @@ impl Default for ObsApp {
                 let mut img = job.image;
                 // Exposure
                 if job.exposure.abs() > f32::EPSILON {
-                    let v = (job.exposure * 100.0) as i32;
                     img = DynamicImage::ImageRgba8(
-                        imageops::brighten(&img.to_rgba8(), v),
+                        imageops::brighten(&img.to_rgba8(), (job.exposure * 100.0) as i32),
                     );
                 }
                 // Contrast
@@ -86,16 +85,14 @@ impl Default for ObsApp {
                 }
                 // Saturation
                 if job.saturation.abs() > f32::EPSILON {
-                    let factor = 1.0 + job.saturation / 100.0;
                     img = DynamicImage::ImageRgba8(
-                        saturate(&img.to_rgba8(), factor),
+                        saturate(&img.to_rgba8(), 1.0 + job.saturation / 100.0),
                     );
                 }
-                // Vibrance (approx. same as saturation)
+                // Vibrance
                 if job.vibrance.abs() > f32::EPSILON {
-                    let factor = 1.0 + job.vibrance / 100.0;
                     img = DynamicImage::ImageRgba8(
-                        saturate(&img.to_rgba8(), factor),
+                        saturate(&img.to_rgba8(), 1.0 + job.vibrance / 100.0),
                     );
                 }
                 // Convert to ColorImage for rendering
@@ -120,24 +117,30 @@ impl Default for ObsApp {
             theme: 0,
             job_sender: tx_job,
             result_receiver: rx_res,
+            last_job: Instant::now() - Duration::from_millis(100),
+            debounce: Duration::from_millis(100),
         }
     }
 }
 
 impl ObsApp {
-    fn queue_job(&self) {
+    fn queue_job(&mut self) {
         if let Some(img) = &self.current_image {
-            let job = WorkerJob {
-                image: img.clone(),
-                exposure: self.exposure,
-                contrast: self.contrast,
-                saturation: self.saturation,
-                vibrance: self.vibrance,
-            };
-            let _ = self.job_sender.send(job);
+            let now = Instant::now();
+            if now.duration_since(self.last_job) >= self.debounce {
+                self.last_job = now;
+                let _ = self.job_sender.send(WorkerJob {
+                    image: img.clone(),
+                                             exposure: self.exposure,
+                                             contrast: self.contrast,
+                                             saturation: self.saturation,
+                                             vibrance: self.vibrance,
+                });
+            }
         }
     }
-    fn commit(&mut self) {
+
+    fn commit(&mut self) {(&mut self) {
         if let Some(img) = &self.current_image {
             self.history.push(img.clone());
             self.future.clear();
@@ -172,11 +175,20 @@ impl ObsApp {
 
 impl App for ObsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Handle zoom via Cmd + scroll
+        let scroll = ctx.input(|i| i.scroll_delta);
+        let mods = ctx.input(|i| i.modifiers);
+        if mods.command && scroll.y != 0.0 {
+            let factor = 1.0 + scroll.y * 0.01;
+            self.zoom = (self.zoom * factor).clamp(0.1, 10.0);
+        }
+
         // Receive rendering results
         if let Ok(ci) = self.result_receiver.try_recv() {
             let tex = ctx.load_texture("main_image", ci, TextureOptions::default());
             self.texture = Some(tex);
         }
+
         // Apply theme
         match self.theme {
             0 => ctx.set_visuals(egui::Visuals::dark()),
@@ -200,27 +212,19 @@ impl App for ObsApp {
             ui.horizontal(|ui| {
                 if ui.button("Open…").clicked() {
                     if let Some(path) = FileDialog::new()
-                        .add_filter("Image or RAW", &[
-                            "png",
-                            "jpg",
-                            "jpeg",
-                            "tif",
-                            "tiff",
-                        ])
+                        .add_filter("Image or RAW", &["png", "jpg", "jpeg", "tif", "tiff"] )
                         .pick_file()
                         {
-                            let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                match ext.to_lowercase().as_str() {
-                                    "tif" | "tiff" => {
-                                        // TODO: handle RAW TIFFs via rawloader
-                                        let _ = decode_file(&path);
-                                        DynamicImage::new_luma8(1, 1)
-                                    }
-                                    _ => image::open(&path).unwrap(),
-                                }
-                            } else {
-                                image::open(&path).unwrap()
-                            };
+                            let ext = path.extension()
+    .and_then(|e| e.to_str())
+    .map(|s| s.to_lowercase());
+    let dyn_img = match ext.as_deref() {
+        Some("tif") | Some("tiff") => {
+            let _ = decode_file(&path);
+            DynamicImage::new_luma8(1, 1)
+        }
+        _ => image::open(&path).unwrap(),
+    };
                             self.current_image = Some(dyn_img.clone());
                             self.history.clear();
                             self.future.clear();
@@ -234,8 +238,8 @@ impl App for ObsApp {
                 ComboBox::from_label("Theme")
                 .selected_text(THEME_NAMES[self.theme])
                 .show_ui(ui, |ui| {
-                    for (i, name) in THEME_NAMES.iter().enumerate() {
-                        ui.selectable_value(&mut self.theme, i, *name);
+                    for (i, &name) in THEME_NAMES.iter().enumerate() {
+                        ui.selectable_value(&mut self.theme, i, name);
                     }
                 });
             });
@@ -246,22 +250,14 @@ impl App for ObsApp {
         .resizable(false)
         .show(ctx, |ui| {
             ui.heading("Adjustments");
-            ui.add(
-                egui::Slider::new(&mut self.exposure, -100.0..=100.0)
-                .text("Exposure"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.contrast, -100.0..=100.0)
-                .text("Contrast"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.saturation, -100.0..=100.0)
-                .text("Saturation"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.vibrance, -100.0..=100.0)
-                .text("Vibrance"),
-            );
+            let mut changed = false;
+            changed |= ui.add(egui::Slider::new(&mut self.exposure, -100.0..=100.0).text("Exposure")).changed();
+            changed |= ui.add(egui::Slider::new(&mut self.contrast, -100.0..=100.0).text("Contrast")).changed();
+            changed |= ui.add(egui::Slider::new(&mut self.saturation, -100.0..=100.0).text("Saturation")).changed();
+            changed |= ui.add(egui::Slider::new(&mut self.vibrance, -100.0..=100.0).text("Vibrance")).changed();
+            if changed {
+                self.queue_job();
+            }
         });
 
         // Main image area
