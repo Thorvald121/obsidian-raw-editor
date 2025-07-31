@@ -140,7 +140,7 @@ impl ObsApp {
         }
     }
 
-    fn commit(&mut self) {(&mut self) {
+    fn commit(&mut self) {
         if let Some(img) = &self.current_image {
             self.history.push(img.clone());
             self.future.clear();
@@ -220,11 +220,31 @@ impl App for ObsApp {
     .map(|s| s.to_lowercase());
     let dyn_img = match ext.as_deref() {
         Some("tif") | Some("tiff") => {
-            let _ = decode_file(&path);
-            DynamicImage::new_luma8(1, 1)
+            match decode_file(&path) {
+                Ok(raw) => {
+                    // Extract the data slice from RawImageData
+                    let data: Vec<u8> = match raw.data {
+    rawloader::RawImageData::RawU8(ref v) => v.clone(),
+    rawloader::RawImageData::RawU16(ref v) => {
+        // Convert u16 to u8 (simple scaling, not color managed)
+        v.iter().map(|x| (*x >> 8) as u8).collect()
+    }
+};
+let buf = ImageBuffer::<Rgba<u8>, _>::from_raw(
+    raw.width as u32,
+    raw.height as u32,
+    data
+        .chunks(3)
+        .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+        .collect::<Vec<u8>>(),
+).unwrap();
+DynamicImage::ImageRgba8(buf)
+                }
+                Err(_) => DynamicImage::new_luma8(1, 1),
+            }
         }
-        _ => image::open(&path).unwrap(),
-    };
+    _ => image::open(&path).unwrap(),
+};
                             self.current_image = Some(dyn_img.clone());
                             self.history.clear();
                             self.future.clear();
