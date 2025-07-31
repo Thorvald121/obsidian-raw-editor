@@ -1,119 +1,73 @@
 // src/main.rs
-// Dependencies in Cargo.toml:
-// eframe = "0.23"
-// egui = "0.23"
-// image = "0.24"
-// rfd = "0.5"
-// rawloader = "0.37.1"
-
 use eframe::{egui, run_native, App, Frame, NativeOptions};
 use egui::{ColorImage, TextureOptions, Color32, ComboBox};
-use image::{DynamicImage, imageops, ImageBuffer, Rgba};
-use rawloader::decode_file;
+use image::DynamicImage;
 use rfd::FileDialog;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Instant, Duration};
 use std::thread;
 
-/// Adjust saturation by a given factor (1.0 = no change)
-fn saturate(buf: &ImageBuffer<Rgba<u8>, Vec<u8>>, factor: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let (w, h) = (buf.width(), buf.height());
-    let mut out = ImageBuffer::new(w, h);
-    for (x, y, pixel) in buf.enumerate_pixels() {
-        let [r, g, b, a] = pixel.0;
-        let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-        let nr = (lum + (r as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
-        let ng = (lum + (g as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
-        let nb = (lum + (b as f32 - lum) * factor).clamp(0.0, 255.0) as u8;
-        out.put_pixel(x, y, Rgba([nr, ng, nb, a]));
-    }
-    out
-}
+mod raw_loader;
+mod adjustment_state;
+mod history_manager;
+mod image_processor;
+mod ui_manager;
 
-// Worker job for non-blocking adjustments
-struct WorkerJob {
-    image: DynamicImage,
-    exposure: f32,
-    contrast: f32,
-    saturation: f32,
-    vibrance: f32,
-}
 
-// Theme names
+use raw_loader::{RawLoader, LoadError};
+use adjustment_state::AdjustmentState;
+use history_manager::HistoryManager;
+use image_processor::{ImageProcessor, ProcessingJob, ProcessingResult};
+
+// Theme names (keeping from your original code)
 const THEME_NAMES: &[&str] = &[
     "Obsidian Dark",
-"Obsidian Light",
-"Purple Dark",
-"Solarized Light",
+    "Obsidian Light", 
+    "Purple Dark",
+    "Solarized Light",
 ];
 
-struct ObsApp {
+pub struct ObsApp {
+    // Core components
+    raw_loader: RawLoader,
+    adjustment_state: AdjustmentState,
+    history_manager: HistoryManager,
+    
+    // Current state
     current_image: Option<DynamicImage>,
     texture: Option<egui::TextureHandle>,
-    history: Vec<DynamicImage>,
-    future: Vec<DynamicImage>,
     zoom: f32,
-    exposure: f32,
-    contrast: f32,
-    saturation: f32,
-    vibrance: f32,
     theme: usize,
-    job_sender: Sender<WorkerJob>,
-    result_receiver: Receiver<ColorImage>,
+    
+    // Processing
+    job_sender: Sender<ProcessingJob>,
+    result_receiver: Receiver<ProcessingResult>,
     last_job: Instant,
     debounce: Duration,
 }
 
 impl Default for ObsApp {
     fn default() -> Self {
-        let (tx_job, rx_job) = channel::<WorkerJob>();
-        let (tx_res, rx_res) = channel::<ColorImage>();
+        let (tx_job, rx_job) = channel::<ProcessingJob>();
+        let (tx_res, rx_res) = channel::<ProcessingResult>();
+        
+        // Spawn worker thread for image processing
         thread::spawn(move || {
+            let processor = ImageProcessor::new();
             while let Ok(job) = rx_job.recv() {
-                let mut img = job.image;
-                // Exposure
-                if job.exposure.abs() > f32::EPSILON {
-                    img = DynamicImage::ImageRgba8(
-                        imageops::brighten(&img.to_rgba8(), (job.exposure * 100.0) as i32),
-                    );
-                }
-                // Contrast
-                if job.contrast.abs() > f32::EPSILON {
-                    img = DynamicImage::ImageRgba8(
-                        imageops::contrast(&img.to_rgba8(), job.contrast * 100.0),
-                    );
-                }
-                // Saturation
-                if job.saturation.abs() > f32::EPSILON {
-                    img = DynamicImage::ImageRgba8(
-                        saturate(&img.to_rgba8(), 1.0 + job.saturation / 100.0),
-                    );
-                }
-                // Vibrance
-                if job.vibrance.abs() > f32::EPSILON {
-                    img = DynamicImage::ImageRgba8(
-                        saturate(&img.to_rgba8(), 1.0 + job.vibrance / 100.0),
-                    );
-                }
-                // Convert to ColorImage for rendering
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let flat = rgba.into_flat_samples();
-                let pixels = flat.as_slice();
-                let ci = ColorImage::from_rgba_unmultiplied(size, pixels);
-                let _ = tx_res.send(ci);
+                let result = processor.process_image(job);
+                let _ = tx_res.send(result);
             }
         });
+        
         Self {
+            raw_loader: RawLoader::new(),
+            adjustment_state: AdjustmentState::default(),
+            history_manager: HistoryManager::new(),
             current_image: None,
             texture: None,
-            history: Vec::new(),
-            future: Vec::new(),
             zoom: 1.0,
-            exposure: 0.0,
-            contrast: 0.0,
-            saturation: 0.0,
-            vibrance: 0.0,
             theme: 0,
             job_sender: tx_job,
             result_receiver: rx_res,
@@ -124,72 +78,76 @@ impl Default for ObsApp {
 }
 
 impl ObsApp {
-    fn queue_job(&mut self) {
+    fn load_image(&mut self, path: PathBuf) {
+        match self.raw_loader.load_image(&path) {
+            Ok(image) => {
+                self.current_image = Some(image.clone());
+                self.history_manager.clear();
+                self.history_manager.push_state(image);
+                self.adjustment_state.reset();
+                self.queue_processing_job();
+                println!("Successfully loaded: {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("Failed to load image {}: {}", path.display(), e);
+            }
+        }
+    }
+    
+    fn queue_processing_job(&mut self) {
         if let Some(img) = &self.current_image {
             let now = Instant::now();
             if now.duration_since(self.last_job) >= self.debounce {
                 self.last_job = now;
-                let _ = self.job_sender.send(WorkerJob {
+                let job = ProcessingJob {
                     image: img.clone(),
-                                             exposure: self.exposure,
-                                             contrast: self.contrast,
-                                             saturation: self.saturation,
-                                             vibrance: self.vibrance,
-                });
+                    adjustments: self.adjustment_state.clone(),
+                };
+                let _ = self.job_sender.send(job);
             }
         }
     }
-
-    fn commit(&mut self) {
+    
+    fn handle_undo(&mut self) {
+        if let Some(image) = self.history_manager.undo() {
+            self.current_image = Some(image);
+            self.adjustment_state.reset();
+            self.queue_processing_job();
+        }
+    }
+    
+    fn handle_redo(&mut self) {
+        if let Some(image) = self.history_manager.redo() {
+            self.current_image = Some(image);
+            self.adjustment_state.reset();
+            self.queue_processing_job();
+        }
+    }
+    
+    fn handle_reset(&mut self) {
+        if let Some(original) = self.history_manager.get_original() {
+            self.current_image = Some(original);
+            self.adjustment_state.reset();
+            self.queue_processing_job();
+        }
+    }
+    
+    fn commit_changes(&mut self) {
         if let Some(img) = &self.current_image {
-            self.history.push(img.clone());
-            self.future.clear();
+            self.history_manager.push_state(img.clone());
         }
     }
-    fn undo(&mut self) {
-        if let Some(prev) = self.history.pop() {
-            if let Some(curr) = &self.current_image {
-                self.future.push(curr.clone());
-            }
-            self.current_image = Some(prev);
-            self.queue_job();
-        }
-    }
-    fn redo(&mut self) {
-        if let Some(next) = self.future.pop() {
-            if let Some(curr) = &self.current_image {
-                self.history.push(curr.clone());
-            }
-            self.current_image = Some(next);
-            self.queue_job();
-        }
-    }
-    fn reset(&mut self) {
-        if let Some(first) = self.history.first().cloned() {
-            self.current_image = Some(first);
-            self.future.clear();
-            self.queue_job();
-        }
-    }
-}
-
-impl App for ObsApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // Handle zoom via Cmd + scroll
+    
+    fn handle_zoom_input(&mut self, ctx: &egui::Context) {
         let scroll = ctx.input(|i| i.scroll_delta);
         let mods = ctx.input(|i| i.modifiers);
         if mods.command && scroll.y != 0.0 {
             let factor = 1.0 + scroll.y * 0.01;
             self.zoom = (self.zoom * factor).clamp(0.1, 10.0);
         }
-
-        // Receive rendering results
-        if let Ok(ci) = self.result_receiver.try_recv() {
-            let tex = ctx.load_texture("main_image", ci, TextureOptions::default());
-            self.texture = Some(tex);
-        }
-
-        // Apply theme
+    }
+    
+    fn apply_theme(&self, ctx: &egui::Context) {
         match self.theme {
             0 => ctx.set_visuals(egui::Visuals::dark()),
             1 => ctx.set_visuals(egui::Visuals::light()),
@@ -206,105 +164,205 @@ impl App for ObsApp {
             }
             _ => {}
         }
-
-        // Top ribbon
+    }
+    
+    fn render_top_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open…").clicked() {
+                    let supported_extensions = self.raw_loader.get_supported_extensions();
                     if let Some(path) = FileDialog::new()
-                        .add_filter("Image or RAW", &["png", "jpg", "jpeg", "tif", "tiff"] )
+                        .add_filter("Images & RAW", &supported_extensions)
                         .pick_file()
-                        {
-                            let ext = path.extension()
-    .and_then(|e| e.to_str())
-    .map(|s| s.to_lowercase());
-    let dyn_img = match ext.as_deref() {
-        Some("tif") | Some("tiff") => {
-            match decode_file(&path) {
-                Ok(raw) => {
-                    // Extract the data slice from RawImageData
-                    let data: Vec<u8> = match raw.data {
-    rawloader::RawImageData::RawU8(ref v) => v.clone(),
-    rawloader::RawImageData::RawU16(ref v) => {
-        // Convert u16 to u8 (simple scaling, not color managed)
-        v.iter().map(|x| (*x >> 8) as u8).collect()
-    }
-};
-let buf = ImageBuffer::<Rgba<u8>, _>::from_raw(
-    raw.width as u32,
-    raw.height as u32,
-    data
-        .chunks(3)
-        .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
-        .collect::<Vec<u8>>(),
-).unwrap();
-DynamicImage::ImageRgba8(buf)
-                }
-                Err(_) => DynamicImage::new_luma8(1, 1),
-            }
-        }
-    _ => image::open(&path).unwrap(),
-};
-                            self.current_image = Some(dyn_img.clone());
-                            self.history.clear();
-                            self.future.clear();
-                            self.commit();
-                            self.queue_job();
-                        }
-                }
-                if ui.button("Undo").clicked() { self.undo(); }
-                if ui.button("Redo").clicked() { self.redo(); }
-                if ui.button("Reset").clicked() { self.reset(); }
-                ComboBox::from_label("Theme")
-                .selected_text(THEME_NAMES[self.theme])
-                .show_ui(ui, |ui| {
-                    for (i, &name) in THEME_NAMES.iter().enumerate() {
-                        ui.selectable_value(&mut self.theme, i, name);
+                    {
+                        self.load_image(path);
                     }
-                });
+                }
+                
+                ui.separator();
+                
+                let can_undo = self.history_manager.can_undo();
+                let can_redo = self.history_manager.can_redo();
+                
+                if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
+                    self.handle_undo();
+                }
+                if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
+                    self.handle_redo();
+                }
+                if ui.add_enabled(self.current_image.is_some(), egui::Button::new("Reset")).clicked() {
+                    self.handle_reset();
+                }
+                
+                ui.separator();
+                
+                ComboBox::from_label("Theme")
+                    .selected_text(THEME_NAMES[self.theme])
+                    .show_ui(ui, |ui| {
+                        for (i, &name) in THEME_NAMES.iter().enumerate() {
+                            ui.selectable_value(&mut self.theme, i, name);
+                        }
+                    });
+                
+                ui.separator();
+                
+                // Show image info if available
+                if let Some(_img) = &self.current_image {
+                    ui.label(format!("Zoom: {:.1}%", self.zoom * 100.0));
+                }
             });
         });
-
-        // Side panel for adjustments
-        egui::SidePanel::right("side_panel")
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.heading("Adjustments");
-            let mut changed = false;
-            changed |= ui.add(egui::Slider::new(&mut self.exposure, -100.0..=100.0).text("Exposure")).changed();
-            changed |= ui.add(egui::Slider::new(&mut self.contrast, -100.0..=100.0).text("Contrast")).changed();
-            changed |= ui.add(egui::Slider::new(&mut self.saturation, -100.0..=100.0).text("Saturation")).changed();
-            changed |= ui.add(egui::Slider::new(&mut self.vibrance, -100.0..=100.0).text("Vibrance")).changed();
-            if changed {
-                self.queue_job();
-            }
-        });
-
-        // Main image area
+    }
+    
+    fn render_adjustment_panel(&mut self, ctx: &egui::Context) -> bool {
+        let mut changed = false;
+        
+        egui::SidePanel::right("adjustment_panel")
+            .resizable(true)
+            .default_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("Adjustments");
+                
+                ui.separator();
+                
+                // Basic adjustments
+                ui.label("Basic");
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.exposure, -5.0..=5.0)
+                    .text("Exposure")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.contrast, -100.0..=100.0)
+                    .text("Contrast")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.highlights, -100.0..=100.0)
+                    .text("Highlights")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.shadows, -100.0..=100.0)
+                    .text("Shadows")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.whites, -100.0..=100.0)
+                    .text("Whites")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.blacks, -100.0..=100.0)
+                    .text("Blacks")).changed();
+                
+                ui.separator();
+                
+                // Color adjustments
+                ui.label("Color");
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.saturation, -100.0..=100.0)
+                    .text("Saturation")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.vibrance, -100.0..=100.0)
+                    .text("Vibrance")).changed();
+                
+                ui.separator();
+                
+                // White balance
+                ui.label("White Balance");
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.temperature, -100.0..=100.0)
+                    .text("Temperature")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.tint, -100.0..=100.0)
+                    .text("Tint")).changed();
+                
+                ui.separator();
+                
+                // Advanced adjustments
+                ui.label("Advanced");
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.clarity, -100.0..=100.0)
+                    .text("Clarity")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.adjustment_state.dehaze, -100.0..=100.0)
+                    .text("Dehaze")).changed();
+                
+                ui.separator();
+                
+                // Reset button
+                if ui.button("Reset All").clicked() {
+                    self.adjustment_state.reset();
+                    changed = true;
+                }
+                
+                // Commit changes button
+                if ui.button("Apply Changes").clicked() {
+                    self.commit_changes();
+                }
+            });
+        
+        changed
+    }
+    
+    fn render_main_panel(&self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(tex) = &self.texture {
-                egui::ScrollArea::both().show(ui, |ui| {
-                    let size = tex.size_vec2() * self.zoom;
-                    ui.image((tex.id(), size));
-                });
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let size = tex.size_vec2() * self.zoom;
+                        let response = ui.image((tex.id(), size));
+                        
+                        // Show image coordinates on hover
+                        if response.hovered() {
+                            if let Some(pos) = response.hover_pos() {
+                                let image_pos = (pos - response.rect.min) / self.zoom;
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                                egui::show_tooltip_at_pointer(ui.ctx(), egui::Id::new("image_coords"), |ui| {
+                                    ui.label(format!("X: {:.0}, Y: {:.0}", image_pos.x, image_pos.y));
+                                });
+                            }
+                        }
+                    });
             } else {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Open an image to get started");
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Obsidian RAW Editor");
+                        ui.add_space(20.0);
+                        ui.label("Open an image or RAW file to get started");
+                        ui.add_space(10.0);
+                        ui.label("Supported formats:");
+                        ui.label("• RAW: CR2, NEF, ARW, DNG, RAF, ORF, RW2, and more");
+                        ui.label("• Standard: JPEG, PNG, TIFF, BMP, WebP");
+                    });
                 });
             }
         });
     }
 }
 
+impl App for ObsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Handle zoom input
+        self.handle_zoom_input(ctx);
+        
+        // Receive processing results
+        if let Ok(result) = self.result_receiver.try_recv() {
+            match result {
+                ProcessingResult::Success(color_image) => {
+                    let tex = ctx.load_texture("main_image", color_image, TextureOptions::default());
+                    self.texture = Some(tex);
+                }
+                ProcessingResult::Error(e) => {
+                    eprintln!("Processing error: {}", e);
+                }
+            }
+        }
+        
+        // Apply theme
+        self.apply_theme(ctx);
+        
+        // Render UI panels
+        self.render_top_panel(ctx);
+        let adjustments_changed = self.render_adjustment_panel(ctx);
+        self.render_main_panel(ctx);
+        
+        // Queue processing job if adjustments changed
+        if adjustments_changed {
+            self.queue_processing_job();
+        }
+    }
+}
+
 fn main() {
     let native_options = NativeOptions {
-        initial_window_size: Some(egui::Vec2::new(1024.0, 768.0)),
+        initial_window_size: Some(egui::Vec2::new(1200.0, 800.0)),
         ..Default::default()
     };
+    
     run_native(
-        "Obsidian",
+        "Obsidian RAW Editor",
         native_options,
         Box::new(|_cc| Box::new(ObsApp::default())),
-    )
-    .unwrap();
+    ).unwrap();
 }
